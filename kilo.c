@@ -1,3 +1,4 @@
+// On step 102
 /*** includes ***/
 
 #define _DEFAULT_SOURCE
@@ -37,20 +38,22 @@ enum editorKey {
 
 /*** data***/
 
+// Contains data for an Editor Row
 typedef struct erow {
-	int size;
+	int size; // Size of row
 	int rsize;
 	char *chars;
 	char *render;
 } erow;
 
+// Struct for storing info about the editor state
 struct editorConfig {
 	int cx, cy;
 	int rx;
 	int rowoff;
 	int coloff;
-	int screenrows;
-	int screencols;
+	int screenrows; // Rows on the screen/window
+	int screencols; // Column on the screen/window
 	int numrows;
 	erow *row;
 	char *filename;
@@ -63,31 +66,40 @@ struct editorConfig E;
 
 /*** terminal ***/
 
+// Function to print an error message and exit the program. Takes a string containing name of function where die() is called.
 void die(const char *s) {
-	write(STDOUT_FILENO, "\x1b[2J", 4);
-	write(STDOUT_FILENO, "\x1b[H", 3);
+	write(STDOUT_FILENO, "\x1b[2J", 4); // Clears screen.
+	write(STDOUT_FILENO, "\x1b[H", 3); // Sets cursor positon to top left.
 
 	perror(s);
 	exit(1);
 }
 
+// Function to enagle ECHOing in the terminal. Used when the program exits.
 void disableRawMode() {
 	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &E.orig_termios) == -1) die("tcsetattr");
 }
 
+// Function to disable ECHOing in the terminal.
 void enableRawMode() {
+	// Gets attributes of the terminal and stores in E.orig_termios, exits program on error.
 	if (tcgetattr(STDIN_FILENO, &E.orig_termios) == -1) die("tcgetattr");
+	// Ensures raw mode is disabled when the program exits
 	atexit(disableRawMode);
 
+	// Copies the original attributes so they can be edited while the original can still be used.
 	struct termios raw = E.orig_termios;
 
-	raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
-	raw.c_oflag &= ~(OPOST);
-	raw.c_cflag |= (CS8);
-	raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-	raw.c_cc[VMIN] = 0;
+	// Uses bitwise NON and bitwise AND to flip values of flags.
+	raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON); // BRKINT sends a SIGINT signal to the program on a break condition. ICRNL sends carriage return and newline from Ctrl-M and Enter. INPCK enables parity checking. ISTRIP causes the 8th bit of a byte input to be set to 0. IXON stops sending data to the terminal (XOFF) with Ctrl-S and resumes (XON) with Ctrl-Q
+	raw.c_oflag &= ~(OPOST); // OPOST turns every "\n" sent to output into "\r\n"
+	raw.c_cflag |= (CS8); // CS* is a bit mask which sets the Character Size to 8 bits per byte.
+	raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG); // ECHO prints out input. ICANON reads line by line instead of byte by byte. IEXTEN sends the next character literally when Ctrl-Z is pressed. ISIG sends SIGINT and SIGTSTP from Ctrl-C and Ctrl-Z, respectively. 
+	// Sets timeout so that read() returns when there is no input, which allows for animating something while waiting for input.
+	raw.c_cc[VMIN] = 0; // Minumum number of bytes needed for read() to return input.
 	raw.c_cc[VTIME] = 1;
 
+	// Sets 
 	if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
@@ -145,28 +157,32 @@ int getCursorPosition(int *rows, int *cols) {
 	char buf[32];
 	unsigned int i = 0;
 
-	if(write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1;
+	if(write(STDOUT_FILENO, "\x1b[6n", 4) != 4) return -1; // "\x1b[6n" queries the terminal for the cursor position. Returns -1 if the write() errors.
 
+	// Previous if statement should cause an escape sequence to be returned in the format of "\x1b[20:20R".
+	// This while loop reads values until there are no more characters or the character read is 'R'. 
 	while (i < sizeof(buf) - 1)  {
-		if (read(STDIN_FILENO, &buf[i], 1) != 1) break;
-		if (buf[i] == 'R') break;
+		if (read(STDIN_FILENO, &buf[i], 1) != 1) break; // Exits loop if read() does not read anything.
+		if (buf[i] == 'R') break; // Exits loop if the character just read is 'R'.
 		i++;
 	}
-	buf[i] = '\0';
+	buf[i] = '\0'; // i is past the data stored in buf, so buf[i] is set to null.
 
-	if (buf[0] != '\x1b' || buf[1] != '[') return -1;
-	if (sscanf(&buf[2], "%d;%d", rows, cols) != 2) return -1;
+	if (buf[0] != '\x1b' || buf[1] != '[') return -1; // If buf did not get the correct data that starts with "\x1b[" return -1 for error.
+	if (sscanf(&buf[2], "%d;%d", rows, cols) != 2) return -1; // Scans for integers in the char array, returns -1 on error.
 
 	return 0;
 }
 
+// Function to get the size of the terminal in rows and columns.
 int getWindowSize(int *rows, int *cols) {
 	struct winsize ws;
 
-	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
-		if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1;
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) { // If the method for getting window size fails (returns -1 or sets col to 0.)
+		if (write(STDOUT_FILENO, "\x1b[999C\x1b[999B", 12) != 12) return -1; // Moves the cursor as far right and down as possible using sequences that do not move the cursor past the screen ("\x1b[999;999H" may move it past the edge.)
 		return getCursorPosition(rows, cols);
 	} else {
+		// Update pointers passed to function and return 0 for success.
 		*cols = ws.ws_col;
 		*rows = ws.ws_row;
 		return 0;
@@ -222,6 +238,15 @@ void editorAppendRow(char *s, size_t len) {
 	editorUpdateRow(&E.row[at]);
 
 	E.numrows++;
+}
+
+void editorRowInsertChar(erow *row, int at, int c) {
+	if (at < 0 || at > row->size) at = row->size;
+	row->chars = realloc(row->chars, row->size + 2);
+	memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
+	row->size++;
+	row->chars[at] = c;
+	editorUpdateRow(row);
 }
 
 
@@ -291,9 +316,10 @@ void editorScroll() {
 	}
 }
 
+// Function to draw each row to the terminal
 void editorDrawRows(struct abuf *ab) {
 	int y;
-	for (y = 0; y < E.screenrows; y++) {
+	for (y = 0; y < E.screenrows; y++) { // For each column in the row
 		int filerow = y + E.rowoff;
 		if (filerow >= E.numrows) {
 			if (E.numrows == 0 && y == E.screenrows / 3) {
@@ -308,7 +334,7 @@ void editorDrawRows(struct abuf *ab) {
 				while (padding--) abAppend(ab, " ", 1);
 				abAppend(ab, welcome, welcomelen);
 			} else {
-				abAppend(ab, "~", 1);
+				abAppend(ab, "~", 1); // Puts ~ on each line after the end of file
 			}
 		} else {
 			int len = E.row[filerow].rsize - E.coloff;
@@ -318,7 +344,7 @@ void editorDrawRows(struct abuf *ab) {
 		}
 
 		abAppend(ab, "\x1b[K", 3);
-			abAppend(ab, "\r\n", 2);
+		abAppend(ab, "\r\n", 2); // Carriage return and newline
 	}
 }
 
@@ -350,13 +376,14 @@ void editorDrawMessageBar(struct abuf *ab) {
 		abAppend(ab, E.statusmsg, msglen);
 }
 
+// Function to render the screen after each keypress. 
 void editorRefreshScreen() {
 	editorScroll();
 
 	struct abuf ab = ABUF_INIT;
 	
 	abAppend(&ab, "\x1b[?25l", 6);
-	abAppend(&ab, "\x1b[H", 3);
+	abAppend(&ab, "\x1b[H", 3); // Move cursor to top left
 
 	editorDrawRows(&ab);
 	editorDrawStatusBar(&ab);
@@ -425,10 +452,10 @@ void editorProcessKeypress() {
 	int c = editorReadKey();
 
 	switch (c) {
-		case CTRL_KEY('q'):
-			write(STDOUT_FILENO, "\x1b[2J", 4);
-			write(STDOUT_FILENO, "\x1b[H", 3);
-			exit(0);
+		case CTRL_KEY('q'): // User pressed Ctrl-q
+			write(STDOUT_FILENO, "\x1b[2J", 4); // Clear screen
+			write(STDOUT_FILENO, "\x1b[H", 3); // Move cursor to top left
+			exit(0); // Exit program with code 0
 			break;
 
 		case HOME_KEY:
@@ -463,6 +490,7 @@ void editorProcessKeypress() {
 
 /*** init ***/
 
+// Function to initialize the fields in the E struct
 void initEditor() {
 	E.cx = 0;
 	E.cy = 0;
